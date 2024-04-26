@@ -5,6 +5,11 @@
 *.dll
 *.so
 *.dylib
+main
+debug
+gorenamemedia_*
+
+.vscode*
 
 # Test binary, built with `go test -c`
 *.test
