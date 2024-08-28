@@ -1,5 +1,5 @@
 // Author: Josh Kendrick
-// Version: v0.0.1
+// Version: v0.2.0
 // License: do whatever you want with this code
 
 package main
@@ -17,17 +17,6 @@ import (
 
 const EXIFTOOL_PATH = "./exiftool.exe"
 
-// Filetypes
-const JPEG = "JPEG"
-const JPEG_EXT = ".jpg"
-const MOV = "MOV"
-const MOV_EXT = ".mov"
-
-// Date/Time formats
-const JPEG_FORMAT = "2006:01:02 15:04:05"
-const MOV_FORMAT = JPEG_FORMAT + "-07:00"
-const RENAME_FORMAT = "2006-01-02_150405"
-
 // struct to hold pieces of a db statement
 type FileError struct {
 	path string
@@ -43,12 +32,10 @@ func main() {
 
 	// produce the files to the channel for the processor
 	filepaths := make(chan string, 100)
-	producedCount := 0
 	go func() {
 		filepath.Walk(directory, func(path string, f os.FileInfo, err error) error {
 			if !f.IsDir() {
 				filepaths <- path
-				producedCount++
 			}
 
 			return nil
@@ -57,16 +44,8 @@ func main() {
 		close(filepaths)
 	}()
 
-	// reporting channel
-	processorDone := make(chan int)
-	// slice to hold issues
-	issues := make([]FileError, 10)
 	// start the processor
-	go fileProcessor(filepaths, processorDone, issues)
-
-	// wait for processor to finish
-	consumedCount := <-processorDone
-	close(processorDone)
+	completedCount, issues := fileProcessor(filepaths)
 
 	// loop through and print any issues
 	for _, issue := range issues {
@@ -74,17 +53,14 @@ func main() {
 			break
 		}
 		fileNameRel := filepath.Base(issue.path)
-		log.Printf("!!ERROR!! -- %v: %v", fileNameRel, issue.err)
+		log.Printf("!!ERROR!! -- %v -> %v", fileNameRel, issue.err)
 	}
 
 	// print results
-	log.Printf("produced: %d || consumed %d", producedCount, consumedCount)
+	log.Printf("renamed: %d || issues %d", completedCount, len(issues))
 }
 
-func fileProcessor(filepaths <-chan string, done chan<- int, issues []FileError) {
-	var issue FileError
-	count := 0
-
+func fileProcessor(filepaths <-chan string) (count int, issues []FileError) {
 	// create the exifReader
 	// this isnt flexible, as is will only work on windows with exiftool.exe in same location as execution
 	exifReader, err := exiftool.NewExiftool(exiftool.SetExiftoolBinaryPath(EXIFTOOL_PATH))
@@ -93,15 +69,15 @@ func fileProcessor(filepaths <-chan string, done chan<- int, issues []FileError)
 		return
 	}
 
+	var issue FileError
 	// get a filepath
 	for {
 		filenameAbs, more := <-filepaths
+		// if no more, then stop + return
 		if !more {
 			log.Printf("consumed %d files", count)
-			done <- count
 			return
 		}
-		count++
 
 		// get the filename
 		fileNameRel := filepath.Base(filenameAbs)
@@ -123,43 +99,12 @@ func fileProcessor(filepaths <-chan string, done chan<- int, issues []FileError)
 			continue
 		}
 
-		// parse and get renaming values
-		var dateTimeParsed time.Time
-		var fileExt string
-		if fileType == JPEG {
-			dateTime, _ := fileInfo.GetString("DateTimeOriginal")
-			fileExt = JPEG_EXT
-			dateTimeParsed, err = time.Parse(JPEG_FORMAT, dateTime)
-		} else if fileType == MOV {
-			dateTime, _ := fileInfo.GetString("CreationDate")
-			fileExt = MOV_EXT
-			dateTimeParsed, err = time.Parse(MOV_FORMAT, dateTime)
-		} else {
-			errorText := fmt.Sprintf("!!INFO!! -- not a supported type %v", fileType)
-			err = errors.New(errorText)
-		}
+		// use file info to generate the new fileName for renaming
+		newFileName, newFilePath, err := generateNewName(filenameAbs, fileInfo, fileType)
 		if err != nil {
 			issue = FileError{fileNameRel, err}
 			issues = append(issues, issue)
 			continue
-		}
-
-		// find a new filename, create the new filepath
-		newFileName := dateTimeParsed.Format(RENAME_FORMAT) // + fileExt
-		fileDir := filepath.Dir(filenameAbs)
-		var newFilePath string
-		i := 1
-		for {
-			index := fmt.Sprintf("%02d", i)
-			testFilename := newFileName + "_" + index + fileExt
-			testFilePath := filepath.Join(fileDir, testFilename)
-			if _, testErr := os.Stat(testFilePath); testErr == nil {
-				i++
-			} else {
-				newFileName = testFilename
-				newFilePath = testFilePath
-				break
-			}
 		}
 
 		log.Printf("renaming %v to %v", fileNameRel, newFileName)
@@ -169,6 +114,80 @@ func fileProcessor(filepaths <-chan string, done chan<- int, issues []FileError)
 			issue = FileError{fileNameRel, err}
 			issues = append(issues, issue)
 			continue
+		} else {
+			count++
 		}
 	}
+}
+
+// Filetypes
+const JPEG = "JPEG"
+const JPEG_EXT = ".jpg"
+const HEIC = "HEIC"
+const HEIC_EXT = ".heic"
+const PNG = "PNG"
+const PNG_EXT = ".png"
+const MP4 = "MP4"
+const MP4_EXT = ".mp4"
+const MOV = "MOV"
+const MOV_EXT = ".mov"
+
+// Date/Time formats
+const JPEG_FORMAT = "2006:01:02 15:04:05"
+const HEIC_FORMAT = JPEG_FORMAT + ".000-07:00"
+const MOV_FORMAT = JPEG_FORMAT + "-07:00"
+const RENAME_FORMAT = "2006-01-02_150405"
+
+func generateNewName(filenameAbs string, fileInfo exiftool.FileMetadata, fileType string) (newFileName string, newFilePath string, err error) {
+	// parse and get renaming values
+	var dateTimeParsed time.Time
+	var fileExt string
+	if fileType == JPEG {
+		dateTime, _ := fileInfo.GetString("DateTimeOriginal")
+		fileExt = JPEG_EXT
+		dateTimeParsed, err = time.Parse(JPEG_FORMAT, dateTime)
+	} else if fileType == HEIC {
+		dateTime, _ := fileInfo.GetString("SubSecDateTimeOriginal")
+		fileExt = HEIC_EXT
+		dateTimeParsed, err = time.Parse(HEIC_FORMAT, dateTime)
+	} else if fileType == PNG {
+		dateTime, _ := fileInfo.GetString("DateTimeOriginal")
+		fileExt = PNG_EXT
+		dateTimeParsed, err = time.Parse(JPEG_FORMAT, dateTime)
+	} else if fileType == MP4 {
+		dateTime, _ := fileInfo.GetString("DateTimeOriginal")
+		fileExt = MP4_EXT
+		dateTimeParsed, err = time.Parse(MOV_FORMAT, dateTime)
+	} else if fileType == MOV {
+		dateTime, _ := fileInfo.GetString("CreationDate")
+		fileExt = MOV_EXT
+		dateTimeParsed, err = time.Parse(MOV_FORMAT, dateTime)
+	} else {
+		errorText := fmt.Sprintf("!!INFO!! -- not a supported type %v", fileType)
+		err = errors.New(errorText)
+	}
+
+	// if there was an error, return before renaming
+	if err != nil {
+		return newFileName, newFilePath, err
+	}
+
+	// find a new filename, create the new filepath
+	newFileName = dateTimeParsed.Format(RENAME_FORMAT)
+	fileDir := filepath.Dir(filenameAbs)
+	i := 1
+	for {
+		index := fmt.Sprintf("%02d", i)
+		testFilename := newFileName + "_" + index + fileExt
+		testFilePath := filepath.Join(fileDir, testFilename)
+		if _, testErr := os.Stat(testFilePath); testErr == nil {
+			i++
+		} else {
+			newFileName = testFilename
+			newFilePath = testFilePath
+			break
+		}
+	}
+
+	return newFileName, newFilePath, err
 }
