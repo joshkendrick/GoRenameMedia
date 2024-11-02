@@ -1,5 +1,5 @@
 // Author: Josh Kendrick
-// Version: v0.2.0
+// Version: v0.3.0
 // License: do whatever you want with this code
 
 package main
@@ -139,27 +139,38 @@ const MOV_FORMAT = JPEG_FORMAT + "-07:00"
 const RENAME_FORMAT = "2006-01-02_150405"
 
 func generateNewName(filenameAbs string, fileInfo exiftool.FileMetadata, fileType string) (newFileName string, newFilePath string, err error) {
+	// attempt to read the date/time from a range of fields
+	dateTime, _ := fileInfo.GetString("DateTimeOriginal") // typical for JPEG, PNG, and MP4
+	if dateTime == "" {
+		dateTime, _ = fileInfo.GetString("CreationDate") // MOV
+	}
+	if dateTime == "" {
+		dateTime, _ = fileInfo.GetString("SubSecDateTimeOriginal") // HEIC
+	}
+	if dateTime == "" {
+		dateTime, _ = fileInfo.GetString("ContentCreateDate") // sometimes MOV / MP4
+	}
+	if dateTime == "" { // not able to get a date/time, error out
+		err = errors.New("!!INFO!! -- not able to parse a date/time")
+		return newFileName, newFilePath, err
+	}
+
 	// parse and get renaming values
 	var dateTimeParsed time.Time
 	var fileExt string
 	if fileType == JPEG {
-		dateTime, _ := fileInfo.GetString("DateTimeOriginal")
 		fileExt = JPEG_EXT
 		dateTimeParsed, err = time.Parse(JPEG_FORMAT, dateTime)
 	} else if fileType == HEIC {
-		dateTime, _ := fileInfo.GetString("SubSecDateTimeOriginal")
 		fileExt = HEIC_EXT
 		dateTimeParsed, err = time.Parse(HEIC_FORMAT, dateTime)
 	} else if fileType == PNG {
-		dateTime, _ := fileInfo.GetString("DateTimeOriginal")
 		fileExt = PNG_EXT
 		dateTimeParsed, err = time.Parse(JPEG_FORMAT, dateTime)
 	} else if fileType == MP4 {
-		dateTime, _ := fileInfo.GetString("DateTimeOriginal")
 		fileExt = MP4_EXT
 		dateTimeParsed, err = time.Parse(MOV_FORMAT, dateTime)
 	} else if fileType == MOV {
-		dateTime, _ := fileInfo.GetString("CreationDate")
 		fileExt = MOV_EXT
 		dateTimeParsed, err = time.Parse(MOV_FORMAT, dateTime)
 	} else {
