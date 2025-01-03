@@ -1,5 +1,5 @@
 // Author: Josh Kendrick
-// Version: v0.3.0
+// Version: v0.4.0
 // License: do whatever you want with this code
 
 package main
@@ -45,7 +45,7 @@ func main() {
 	}()
 
 	// start the processor
-	completedCount, issues := fileProcessor(filepaths)
+	renamedCount, issues := fileProcessor(filepaths)
 
 	// loop through and print any issues
 	for _, issue := range issues {
@@ -57,10 +57,10 @@ func main() {
 	}
 
 	// print results
-	log.Printf("renamed: %d || issues %d", completedCount, len(issues))
+	log.Printf("renamed: %d || issues %d", renamedCount, len(issues))
 }
 
-func fileProcessor(filepaths <-chan string) (count int, issues []FileError) {
+func fileProcessor(filepaths <-chan string) (renamed int, issues []FileError) {
 	// create the exifReader
 	// this isnt flexible, as is will only work on windows with exiftool.exe in same location as execution
 	exifReader, err := exiftool.NewExiftool(exiftool.SetExiftoolBinaryPath(EXIFTOOL_PATH))
@@ -70,6 +70,7 @@ func fileProcessor(filepaths <-chan string) (count int, issues []FileError) {
 	}
 
 	var issue FileError
+	var count int
 	// get a filepath
 	for {
 		filenameAbs, more := <-filepaths
@@ -93,6 +94,14 @@ func fileProcessor(filepaths <-chan string) (count int, issues []FileError) {
 
 		// get the file type
 		fileType, err := fileInfo.GetString("FileType")
+		// check it exists
+		if err != nil {
+			issue = FileError{fileNameRel, err}
+			issues = append(issues, issue)
+			continue
+		}
+		// and is a supported type
+		fileExt, err := checkFileTypeSupport(fileType)
 		if err != nil {
 			issue = FileError{fileNameRel, err}
 			issues = append(issues, issue)
@@ -100,23 +109,26 @@ func fileProcessor(filepaths <-chan string) (count int, issues []FileError) {
 		}
 
 		// use file info to generate the new fileName for renaming
-		newFileName, newFilePath, err := generateNewName(filenameAbs, fileInfo, fileType)
+		newFileName, newFilePath, err := generateNewName(filenameAbs, fileInfo, fileExt)
 		if err != nil {
 			issue = FileError{fileNameRel, err}
 			issues = append(issues, issue)
 			continue
 		}
 
-		log.Printf("renaming %v to %v", fileNameRel, newFileName)
-		// rename the file
-		err = os.Rename(filenameAbs, newFilePath)
-		if err != nil {
-			issue = FileError{fileNameRel, err}
-			issues = append(issues, issue)
-			continue
-		} else {
-			count++
+		if fileNameRel != newFileName {
+			log.Printf("renaming %v to %v", fileNameRel, newFileName)
+			// rename the file
+			err = os.Rename(filenameAbs, newFilePath)
+			if err != nil {
+				issue = FileError{fileNameRel, err}
+				issues = append(issues, issue)
+				continue
+			} else {
+				renamed++
+			}
 		}
+		count++
 	}
 }
 
@@ -132,13 +144,31 @@ const MP4_EXT = ".mp4"
 const MOV = "MOV"
 const MOV_EXT = ".mov"
 
+func checkFileTypeSupport(fileType string) (fileExt string, err error) {
+	if fileType == JPEG {
+		fileExt = JPEG_EXT
+	} else if fileType == HEIC {
+		fileExt = HEIC_EXT
+	} else if fileType == PNG {
+		fileExt = PNG_EXT
+	} else if fileType == MP4 {
+		fileExt = MP4_EXT
+	} else if fileType == MOV {
+		fileExt = MOV_EXT
+	} else {
+		err = fmt.Errorf("!!INFO!! -- not a supported type %v", fileType)
+	}
+
+	return fileExt, err
+}
+
 // Date/Time formats
 const JPEG_FORMAT = "2006:01:02 15:04:05"
 const HEIC_FORMAT = JPEG_FORMAT + ".000-07:00"
 const MOV_FORMAT = JPEG_FORMAT + "-07:00"
 const RENAME_FORMAT = "2006-01-02_150405"
 
-func generateNewName(filenameAbs string, fileInfo exiftool.FileMetadata, fileType string) (newFileName string, newFilePath string, err error) {
+func generateNewName(filenameAbs string, fileInfo exiftool.FileMetadata, fileExt string) (newFileName string, newFilePath string, err error) {
 	// attempt to read the date/time from a range of fields
 	dateTime, _ := fileInfo.GetString("DateTimeOriginal") // typical for JPEG, PNG, and MP4
 	if dateTime == "" {
@@ -150,48 +180,40 @@ func generateNewName(filenameAbs string, fileInfo exiftool.FileMetadata, fileTyp
 	if dateTime == "" {
 		dateTime, _ = fileInfo.GetString("ContentCreateDate") // sometimes MOV / MP4
 	}
+	if dateTime == "" {
+		dateTime, _ = fileInfo.GetString("CreateDate") // sometimes JPEG
+	}
 	if dateTime == "" { // not able to get a date/time, error out
-		err = errors.New("!!INFO!! -- not able to parse a date/time")
+		err = errors.New("!!INFO!! -- not able to extract a date/time")
 		return newFileName, newFilePath, err
 	}
 
-	// parse and get renaming values
-	var dateTimeParsed time.Time
-	var fileExt string
-	if fileType == JPEG {
-		fileExt = JPEG_EXT
-		dateTimeParsed, err = time.Parse(JPEG_FORMAT, dateTime)
-	} else if fileType == HEIC {
-		fileExt = HEIC_EXT
-		dateTimeParsed, err = time.Parse(HEIC_FORMAT, dateTime)
-	} else if fileType == PNG {
-		fileExt = PNG_EXT
-		dateTimeParsed, err = time.Parse(JPEG_FORMAT, dateTime)
-	} else if fileType == MP4 {
-		fileExt = MP4_EXT
-		dateTimeParsed, err = time.Parse(MOV_FORMAT, dateTime)
-	} else if fileType == MOV {
-		fileExt = MOV_EXT
-		dateTimeParsed, err = time.Parse(MOV_FORMAT, dateTime)
-	} else {
-		errorText := fmt.Sprintf("!!INFO!! -- not a supported type %v", fileType)
-		err = errors.New(errorText)
-	}
-
-	// if there was an error, return before renaming
+	// attempt to parse
+	dateTimeParsed, err := time.Parse(JPEG_FORMAT, dateTime)
 	if err != nil {
+		dateTimeParsed, err = time.Parse(HEIC_FORMAT, dateTime)
+	}
+	if err != nil {
+		dateTimeParsed, err = time.Parse(MOV_FORMAT, dateTime)
+	}
+	if err != nil {
+		err = fmt.Errorf("!!INFO!! -- not able to parse to a date/time %v", dateTimeParsed)
 		return newFileName, newFilePath, err
 	}
 
 	// find a new filename, create the new filepath
 	newFileName = dateTimeParsed.Format(RENAME_FORMAT)
+
 	fileDir := filepath.Dir(filenameAbs)
 	i := 1
 	for {
 		index := fmt.Sprintf("%02d", i)
 		testFilename := newFileName + "_" + index + fileExt
 		testFilePath := filepath.Join(fileDir, testFilename)
-		if _, testErr := os.Stat(testFilePath); testErr == nil {
+
+		// if testErr is nil, a file with that name was found, so increment and try again
+		// but only if the generated name is different from existing
+		if _, testErr := os.Stat(testFilePath); testErr == nil && testFilePath != filenameAbs {
 			i++
 		} else {
 			newFileName = testFilename
