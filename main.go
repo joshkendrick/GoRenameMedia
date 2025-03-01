@@ -1,5 +1,5 @@
 // Author: Josh Kendrick
-// Version: v0.4.0
+// Version: v0.5.0
 // License: do whatever you want with this code
 
 package main
@@ -63,7 +63,7 @@ func main() {
 func fileProcessor(filepaths <-chan string) (renamed int, issues []FileError) {
 	// create the exifReader
 	// this isnt flexible, as is will only work on windows with exiftool.exe in same location as execution
-	exifReader, err := exiftool.NewExiftool(exiftool.SetExiftoolBinaryPath(EXIFTOOL_PATH))
+	exifReader, err := exiftool.NewExiftool(exiftool.SetExiftoolBinaryPath(EXIFTOOL_PATH), exiftool.Api("QuickTimeUTC"))
 	if err != nil {
 		log.Printf("!!ERROR!! -- %v", err)
 		return
